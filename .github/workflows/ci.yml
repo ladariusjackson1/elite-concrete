@@ -1,0 +1,80 @@
+name: Check
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  html:
+    name: HTML
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Check index.html
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/vnu.jar" https://github.com/validator/validator/releases/download/latest/vnu.jar
+          java -jar "$RUNNER_TEMP/vnu.jar" --format gnu index.html
+
+  links:
+    name: Links
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install lychee
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/lychee.tar.gz" https://github.com/lycheeverse/lychee/releases/download/lychee-v0.24.2/lychee-x86_64-unknown-linux-gnu.tar.gz
+          sudo tar -xzf "$RUNNER_TEMP/lychee.tar.gz" -C /usr/local/bin --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
+
+      - name: Check links
+        run: lychee --no-progress --include-fragments --exclude-loopback --max-retries 3 --timeout 20 index.html README.md
+
+      # Lychee reads anchors, images, stylesheets, and Markdown. It does not read script src.
+      - name: Check script sources
+        run: |
+          python3 - << 'PY'
+          import pathlib
+          import re
+          import sys
+          import urllib.request
+
+          page = pathlib.Path("index.html")
+          html = page.read_text(encoding="utf-8")
+          sources = re.findall(r"""<script\b[^>]*\bsrc=["']([^"']+)["']""", html)
+          if not sources:
+              sys.exit("No script sources found in index.html")
+
+          failures = []
+          for src in sources:
+              if src.startswith(("http://", "https://")):
+                  request = urllib.request.Request(
+                      src,
+                      method="HEAD",
+                      headers={"User-Agent": "elite-concrete-link-check"},
+                  )
+                  try:
+                      with urllib.request.urlopen(request, timeout=20) as response:
+                          if response.status >= 400:
+                              failures.append(f"{src} returned {response.status}")
+                  except Exception as error:
+                      failures.append(f"{src} failed: {error}")
+              elif not (page.parent / src).is_file():
+                  failures.append(f"Missing file: {src}")
+
+          if failures:
+              print("\n".join(failures))
+              sys.exit(1)
+          print(f"Checked {len(sources)} script sources")
+          PY
